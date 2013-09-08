@@ -72,7 +72,7 @@ class NMF():
     _EPS = np.finfo(float).eps
     
     def __init__(self, data, num_bases=4, **kwargs):
-        
+        self._logger = None
         def setup_logging():
             # create logger       
             self._logger = logging.getLogger("pymf")

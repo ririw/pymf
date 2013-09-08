@@ -5,7 +5,9 @@ from nmf import NMF
 
 class LeafType(object):
     def count(self):
-        pass
+        raise NotImplemented
+    def to_count(self, total):
+        raise NotImplemented
 
 
 class LeafProprortion(LeafType):
@@ -14,7 +16,7 @@ class LeafProprortion(LeafType):
         assert (proportion > 0.0)
         self._proportion = proportion
 
-    def count(self, total):
+    def to_count(self, total):
         return self._proportion * total
 
 
@@ -29,15 +31,18 @@ class LeafCount(LeafType):
     class HCHNMF(NMF):
         def __init__(self, data, num_bases=4, base_sel=3, leaf_minimum=LeafProprortion(0.1), **kwargs):
             NMF.__init__(data, num_bases=num_bases, **kwargs)
+            assert(hasattr(self, '_logger'))
+            assert(isinstance(self._logger, logging.Logger))
 
             assert (isinstance(leaf_minimum, LeafType))
             if isinstance(leaf_minimum, LeafProprortion):
-                self._leaf_minimum_int = leaf_minimum.count(self.data.shape[1])
+                self._leaf_minimum_int = leaf_minimum.to_count(self.data.shape[1])
             else:
                 self._leaf_minimum_int = leaf_minimum.count()
-                # base sel should never be larger than the actual data dimension
+            # base sel should never be larger than the actual data dimension
             self._base_sel = base_sel
             if base_sel > self.data.shape[0]:
+                self._logger.warn("The base number of pairwise projections has been set to the number of data dimensions")
                 self._base_sel = self.data.shape[0]
 
         def factorize(self, niter=100, show_progress=False,
