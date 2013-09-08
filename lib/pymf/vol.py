@@ -16,7 +16,7 @@ __version__ = "$Revision: 62 $"
 # $HeadURL: http://pymf.googlecode.com/svn/trunk/lib/pymf/vol.py $
 
 import numpy as np
-from scipy import factorial
+from scipy.misc import factorial
 
 __all__ = ["cmdet", "simplex"]
 
