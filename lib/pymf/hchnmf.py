@@ -20,6 +20,9 @@ class HCHNMF_Rule(object):
     def update_h(self):
         raise NotImplementedError
 
+    def apply_rule(self, data):
+        raise NotImplementedError
+
 
 class HCHNMF_vector_project_split(HCHNMF_Rule):
     def __init__(self, v, theta, left_rule=None, right_rule=None):
@@ -56,6 +59,14 @@ class HCHNMF_vector_project_split(HCHNMF_Rule):
         assert isinstance(self.right_rule, HCHNMF_Rule)
         self.left_rule.update_h() + self.right_rule.update_h()
 
+    def apply_rule(self, data):
+        n_attr, n_data = data.shape
+        projection_distances = self.v.dot(data).reshape((n_data,))
+        left_data = data[:, projection_distances <= self.theta]
+        right_data = data[:, projection_distances > self.theta]
+        return self.left_rule.apply_rule(left_data), self.right_rule.apply_rule(right_data)
+
+
 class HCHNMF_leaf(HCHNMF_Rule):
     def __init__(self, points):
         super(HCHNMF_leaf, self).__init__()
@@ -83,6 +94,9 @@ class HCHNMF_leaf(HCHNMF_Rule):
     def update_h(self):
         self.factorization.update_h()
 
+    def apply_rule(self, data):
+        return data
+
 
 class HCHNMF(object):
     def __init__(self,
@@ -90,7 +104,7 @@ class HCHNMF(object):
                  num_bases=4,
                  base_sel=3,
                  leaf_minimum=0.1,
-                 leaf_count_kind='proportional',
+                 leaf_count_kind='proportional', # Options: proportional, absolute
                  projection_method='pca',
                  **kwargs):
         super(HCHNMF, self).__init__()
@@ -116,6 +130,7 @@ class HCHNMF(object):
         self._data_dimension, self._num_samples = self.data.shape
 
         if leaf_count_kind[0] == 'p':  # Proportional
+            assert leaf_minimum < 0.5
             self._leaf_minimum_int = int(float(self._num_samples) * leaf_minimum)
         else:
             self._leaf_minimum_int = leaf_minimum
@@ -132,7 +147,7 @@ class HCHNMF(object):
         if base_sel > self.data.shape[0]:
             self._logger.warn("The base number of pairwise projections has been set to the number of data dimensions")
             self._base_sel = self.data.shape[0]
-        self.rule_tree = None
+        self.rule_trees = None
 
     def _choose_rule_vecproject(self, data, projection_vec):
         n = data.shape[1]
@@ -166,6 +181,7 @@ class HCHNMF(object):
         x = data[:, np.argmax(t_dist)]
         x_dist = [np.linalg.norm(d) for d in data.T - x]
         y = data[:, np.argmax(x_dist)]
+        print x,y
 
         # unit vector xy
         projection_line = ((x - y) / (np.linalg.norm(x - y))).reshape((1, self._data_dimension))
@@ -215,10 +231,10 @@ class HCHNMF(object):
 
         if compute_h and compute_w:
             self._partitioned_items = 0
-            self.rule_tree = self._divide_space(self._projection_method, self.data, show_progress)
+            self.rule_trees = self._divide_space(self._projection_method, self.data, show_progress)
         else:
-            assert isinstance(self.rule_tree, HCHNMF_Rule)
-            self.rule_tree.check_consistent(compute_w, compute_h)
+            assert isinstance(self.rule_trees, HCHNMF_Rule)
+            self.rule_trees.check_consistent(compute_w, compute_h)
 
         def nmf_factory(data):
             factorization = CHNMF(data, self._num_bases, self._base_sel)
@@ -236,20 +252,37 @@ class HCHNMF(object):
                 self._logger.setLevel(logging.ERROR)
             return factorization
 
-        self.rule_tree.factorize(nmf_factory)
+        self.rule_trees.factorize(nmf_factory)
         if compute_err:
-            self.ferr = self.rule_tree.recover_error()
+            self.ferr = self.rule_trees.recover_error()
 
     def update_w(self):
-        self.rule_tree.update_w()
+        self.rule_trees.update_w()
 
     def update_h(self):
-        self.rule_tree.update_h()
-
+        self.rule_trees.update_h()
 
 
 if __name__ == '__main__':
-    x = np.random.random((10, 100))
-    c = HCHNMF(x)
+    import matplotlib.pyplot as plt
+    import itertools
+    size = 50
+    #w1 = np.random.multivariate_normal([0, 0], [[0.1, 0], [0, 0.1]], size).T
+    #w2 = np.random.multivariate_normal([4, 0], [[0.5, 0], [0, 0.5]], size).T
+    w3 = np.random.multivariate_normal([4, 4], [[0.25, 0], [0, 0.25]], size).T
+    w4 = np.random.multivariate_normal([0, 4], [[0.25, 0], [0, 0.25]], size).T
+    x = np.concatenate((w3, w4), axis=1)
+    c = HCHNMF(x, leaf_minimum=40, leaf_count_kind='a', projection_method='fastmap')
     c.factorize(niter=500, show_progress=True)
-    print c.ferr
+    splits = c.rule_trees.apply_rule(x)
+    groups = []
+    colors = ['r', 'g', 'b', 'black', 'orange', 'purple']
+
+    def prepsplits(splits):
+        if type(splits) != tuple:
+            plt.scatter(splits[0, :], splits[1, :], c=colors.pop())
+        else:
+            prepsplits(splits[0])
+            prepsplits(splits[1])
+    prepsplits(splits)
+    plt.show()
