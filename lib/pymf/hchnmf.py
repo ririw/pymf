@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 from chnmf import CHNMF
+from pca import PCA
 
 
 class HCHNMF_Rule(object):
@@ -11,6 +12,12 @@ class HCHNMF_Rule(object):
         raise NotImplementedError
 
     def recover_error(self):
+        raise NotImplementedError
+
+    def update_w(self):
+        raise NotImplementedError
+
+    def update_h(self):
         raise NotImplementedError
 
 
@@ -39,6 +46,15 @@ class HCHNMF_vector_project_split(HCHNMF_Rule):
         assert isinstance(self.right_rule, HCHNMF_Rule)
         return self.left_rule.recover_error() + self.right_rule.recover_error()
 
+    def update_w(self):
+        assert isinstance(self.left_rule, HCHNMF_Rule)
+        assert isinstance(self.right_rule, HCHNMF_Rule)
+        self.left_rule.update_w() + self.right_rule.update_h()
+
+    def update_h(self):
+        assert isinstance(self.left_rule, HCHNMF_Rule)
+        assert isinstance(self.right_rule, HCHNMF_Rule)
+        self.left_rule.update_h() + self.right_rule.update_h()
 
 class HCHNMF_leaf(HCHNMF_Rule):
     def __init__(self, points):
@@ -61,6 +77,12 @@ class HCHNMF_leaf(HCHNMF_Rule):
     def recover_error(self):
         return self.factorization.ferr
 
+    def update_w(self):
+        self.factorization.update_w()
+
+    def update_h(self):
+        self.factorization.update_h()
+
 
 class HCHNMF(object):
     def __init__(self,
@@ -69,7 +91,7 @@ class HCHNMF(object):
                  base_sel=3,
                  leaf_minimum=0.1,
                  leaf_count_kind='proportional',
-                 projection_method='fastmap',
+                 projection_method='pca',
                  **kwargs):
         super(HCHNMF, self).__init__()
         self._logger = None
@@ -93,20 +115,45 @@ class HCHNMF(object):
 
         self._data_dimension, self._num_samples = self.data.shape
 
-        assert (projection_method in set(['fastmap', 'pca']))
         if leaf_count_kind[0] == 'p':  # Proportional
             self._leaf_minimum_int = int(float(self._num_samples) * leaf_minimum)
         else:
             self._leaf_minimum_int = leaf_minimum
-        self.projection_method = projection_method
-        # base sel should never be larger than the actual data dimension
+        if isinstance(projection_method, str):
+            assert (projection_method in set(['fastmap', 'pca']))
+            self._projection_method = self._choose_rule_fastmap if projection_method == 'fastmap' \
+                else self._choose_rule_pca
+        else:
+            assert callable(projection_method), \
+                "The projection method you specify must by a function or the string 'fastmap' or 'pca'"
+            self._projection_method = projection_method
+            # base sel should never be larger than the actual data dimension
         self._base_sel = base_sel
         if base_sel > self.data.shape[0]:
             self._logger.warn("The base number of pairwise projections has been set to the number of data dimensions")
             self._base_sel = self.data.shape[0]
         self.rule_tree = None
 
-    def _choose_rule_fastmap(self, data):
+    def _choose_rule_vecproject(self, data, projection_vec):
+        n = data.shape[1]
+        projection_distances = projection_vec.dot(data).reshape((n,))
+        sorted_projections = np.sort(projection_distances)
+        c = np.zeros(n - 1)
+        for i in range(1, n):  # We need preconditions to prevent breaks.
+            u1 = np.mean(sorted_projections[:i])
+            u2 = np.mean(sorted_projections[i:])
+            c[i - 1] = np.sum((sorted_projections - u1) ** float(2)) + np.sum((sorted_projections - u2) ** float(2))
+            # By only looking at the middle of this array, we ensure that we do not create
+        # groups with less than self.leaf_minimum_int items
+        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)]) + self._leaf_minimum_int
+        # On the left we have all instances of data who's projection is less than or equal to the chosen split.
+        rule_value = sorted_projections[rule_split]
+        left_tree = data[:, projection_distances <= rule_value]
+        right_tree = data[:, projection_distances > rule_value]
+        rule_theta = (sorted_projections[rule_split] + sorted_projections[rule_split + 1]) / float(2)
+        return HCHNMF_vector_project_split(projection_vec, rule_theta), left_tree, right_tree
+
+    def _choose_rule_fastmap(self, data, show_progress):
         """ Return a tuple-tree of rules that split our data """
         # Pick a random point
         n = data.shape[1]
@@ -122,38 +169,32 @@ class HCHNMF(object):
 
         # unit vector xy
         projection_line = ((x - y) / (np.linalg.norm(x - y))).reshape((1, self._data_dimension))
-        projection_distances = projection_line.dot(data).reshape((n,))
-        sorted_projections = np.sort(projection_distances)
-        c = np.zeros(n - 1)
-        for i in range(1, n):  # We need preconditions to prevent breaks.
-            u1 = np.mean(sorted_projections[:i])
-            u2 = np.mean(sorted_projections[i:])
-            c[i - 1] = np.sum((sorted_projections - u1) ** float(2)) + np.sum((sorted_projections - u2) ** float(2))
-        # By only looking at the middle of this array, we ensure that we do not create
-        # groups with less than self.leaf_minimum_int items
-        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)])+self._leaf_minimum_int
-        # On the left we have all instances of data who's projection is less than or equal to the chosen split.
-        rule_value = sorted_projections[rule_split]
-        left_tree = data[:, projection_distances <= rule_value]
-        right_tree = data[:, projection_distances > rule_value]
-        print left_tree.shape, right_tree.shape
-        rule_theta = (sorted_projections[rule_split] + sorted_projections[rule_split + 1]) / float(2)
+        return self._choose_rule_vecproject(data, projection_line)
 
-        return HCHNMF_vector_project_split(x - y, rule_theta), left_tree, right_tree
-
-    def _choose_rule_pca(self, data):
+    def _choose_rule_pca(self, data, show_progress):
         """Our projections are onto the PCA vectors"""
-        pass
+        pca = PCA(data, num_bases=1)
+        pca.factorize(show_progress)
+        primary_vec = pca.W.reshape(self._data_dimension)
+        return self._choose_rule_vecproject(data, primary_vec)
 
-    def _divide_space(self, choose_rule_fn, data):
-        rule, left_points, right_points = choose_rule_fn(data)
+    def _divide_space(self, choose_rule_fn, data, show_progress):
+        rule, left_points, right_points = choose_rule_fn(data, show_progress)
         assert (isinstance(rule, HCHNMF_vector_project_split))
 
         left_full = left_points.shape[1] <= self._leaf_minimum_int * 2 + 1
         right_full = right_points.shape[1] <= \
                      self._leaf_minimum_int * 2 + 1
-        rule.left_rule = HCHNMF_leaf(left_points) if left_full else self._divide_space(choose_rule_fn, left_points)
-        rule.right_rule = HCHNMF_leaf(right_points) if right_full else self._divide_space(choose_rule_fn, right_points)
+        if left_full:
+            self._partitioned_items += left_points.shape[1]
+        if right_full:
+            self._partitioned_items += right_points.shape[1]
+        if left_full or right_full:
+            self._logger.info("%d%% of space partitioned" % (self._partitioned_items * 100 / self._num_samples))
+        rule.left_rule = HCHNMF_leaf(left_points) if left_full \
+            else self._divide_space(choose_rule_fn, left_points, show_progress)
+        rule.right_rule = HCHNMF_leaf(right_points) if right_full \
+            else self._divide_space(choose_rule_fn, right_points, show_progress)
         return rule
 
     def factorize(self,
@@ -173,15 +214,26 @@ class HCHNMF(object):
             self._logger.setLevel(logging.ERROR)
 
         if compute_h and compute_w:
-            self.rule_tree = self._divide_space(self._choose_rule_fastmap, self.data)
+            self._partitioned_items = 0
+            self.rule_tree = self._divide_space(self._projection_method, self.data, show_progress)
         else:
             assert isinstance(self.rule_tree, HCHNMF_Rule)
             self.rule_tree.check_consistent(compute_w, compute_h)
 
         def nmf_factory(data):
             factorization = CHNMF(data, self._num_bases, self._base_sel)
-            self._logger.error("Factorizing matrix of shape: %s" % str(data.shape))
-            factorization.factorize(show_progress, compute_w, compute_h, compute_err, niter)
+            self._logger.info("Factorizing matrix of shape: %s" % str(data.shape))
+            factorization.factorize(
+                show_progress=show_progress,
+                compute_w=compute_w,
+                compute_h=compute_h,
+                compute_err=compute_err,
+                niter=niter)
+            # Something helpfully resets the logging level >:|
+            if show_progress:
+                self._logger.setLevel(logging.INFO)
+            else:
+                self._logger.setLevel(logging.ERROR)
             return factorization
 
         self.rule_tree.factorize(nmf_factory)
@@ -189,14 +241,15 @@ class HCHNMF(object):
             self.ferr = self.rule_tree.recover_error()
 
     def update_w(self):
-        pass
+        self.rule_tree.update_w()
 
     def update_h(self):
-        pass
+        self.rule_tree.update_h()
+
 
 
 if __name__ == '__main__':
     x = np.random.random((10, 100))
     c = HCHNMF(x)
-    c.factorize(niter=500)
+    c.factorize(niter=500, show_progress=True)
     print c.ferr
