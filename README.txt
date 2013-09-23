@@ -16,6 +16,7 @@ PyMF currently includes the following methods:
     * Archetypal analysis (AA)
     * Simplex volume maximization (SiVM)
     * Convex-hull non-negative matrix factorization (CHNMF)
+    * Heirachical Convex-hull non-negative matrix factorization (HCHNMF)
     * Binary matrix factorization (BNMF)
     * Singular value decomposition (SVD)
     * Principal component analysis (PCA)
@@ -28,6 +29,7 @@ Where to get it
 
 * Main website, documentation:  http://pymf.googlecode.com
 * Contact email: cthurau at googlemail.com
+* Contact email: richardweiss at richardweiss.org
 
 
 Requires

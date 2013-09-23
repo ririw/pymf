@@ -77,6 +77,7 @@ class HCHNMF_vector_project_split(HCHNMF_Rule):
         self.left_rule._insert_data(left)
         self.right_rule._insert_data(right)
 
+
 class HCHNMF_leaf(HCHNMF_Rule):
     def __init__(self, points):
         super(HCHNMF_leaf, self).__init__()
@@ -183,10 +184,11 @@ class HCHNMF(object):
         for i in range(1, n):  # We need preconditions to prevent breaks.
             u1 = np.mean(sorted_projections[:i])
             u2 = np.mean(sorted_projections[i:])
-            c[i - 1] = np.sum((sorted_projections[:i] - u1) ** float(2)) + np.sum((sorted_projections[i:] - u2) ** float(2))
-        # By only looking at the middle of this array, we ensure that we do not create
+            c[i - 1] = np.sum((sorted_projections[:i] - u1) ** float(2)) + np.sum(
+                (sorted_projections[i:] - u2) ** float(2))
+            # By only looking at the middle of this array, we ensure that we do not create
         # groups with less than self.leaf_minimum_int items
-        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)]) + self._leaf_minimum_int 
+        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)]) + self._leaf_minimum_int
         # On the left we have all instances of data who's projection is less than or equal to the chosen split.
         #rule_value = sorted_projections[rule_split]
         rule_value = (sorted_projections[rule_split] + sorted_projections[rule_split + 1]) / float(2)
@@ -293,25 +295,43 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import itertools
 
-    size = 60
+    size = 100
     w1 = np.random.multivariate_normal([0, 0], [[0.1, 0], [0, 0.1]], size).T
     w2 = np.random.multivariate_normal([4, 0], [[0.5, 0], [0, 0.5]], size).T
     w3 = np.random.multivariate_normal([4, 4], [[0.25, 0], [0, 0.25]], size).T
     w4 = np.random.multivariate_normal([0, 4], [[0.25, 0], [0, 0.25]], size).T
     x = np.concatenate((w1, w2, w3, w4), axis=1)
     d1 = np.random.multivariate_normal([0, 0], [[0.1, 0], [0, 0.1]], size).T
-    c = HCHNMF(x, leaf_minimum=40, leaf_count_kind='a', projection_method='fastmap')
+    c = HCHNMF(x, leaf_minimum=70, leaf_count_kind='a', projection_method='fastmap')
     #c = HCHNMF(x, leaf_minimum=40, leaf_count_kind='a', projection_method='pca')
-    c.factorize(niter=500, show_progress=True)
+    c.factorize(niter=200, show_progress=True)
+    print "Testing factorization of inserted data"
     c._data = x
     c.factorize(compute_h=False, show_progress=True)
     splits = c.rule_trees.apply_rule(x)
     groups = []
     colors = ['red', 'green', 'blue', 'orange', 'purple']
 
+    def recover_hull_points(tree):
+        if isinstance(tree, HCHNMF_leaf):
+            assert (isinstance(tree.factorization, CHNMF))
+            return tree.factorization.data[:, tree.factorization._hull_idx]
+        else:
+            assert (isinstance(tree, HCHNMF_vector_project_split))
+            return np.concatenate((recover_hull_points(tree.left_rule), recover_hull_points(tree.right_rule)), axis=1)
+
+    hull_points = recover_hull_points(c.rule_trees)
+
     def prepsplits(splits):
         if type(splits) != tuple:
-            plt.scatter(splits[0, :], splits[1, :], c=colors.pop())
+            color = colors.pop()
+            #print [(hull_points.shape, split.shape) for split in splits.T]
+            #print [(split == hull_points.T).all(axis=1).any() for split in splits.T]
+
+            non_hull_items = np.array([split for split in splits.T if not (split == hull_points.T).all(axis=1).any()])
+            hull_items = np.array([split for split in splits.T if (split == hull_points.T).all(axis=1).any()])
+            plt.scatter(non_hull_items[:, 0], non_hull_items[:, 1], c=color, marker='x')
+            plt.scatter(hull_items[:, 0], hull_items[:, 1], c=color, marker='D')
         else:
             prepsplits(splits[0])
             prepsplits(splits[1])
