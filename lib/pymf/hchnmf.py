@@ -70,10 +70,12 @@ class HCHNMF_vector_project_split(HCHNMF_Rule):
         return self.left_rule.apply_rule(left_data), self.right_rule.apply_rule(right_data)
 
     def update_data(self, data):
-        left, right = self.apply_rule(data)
-        self.left_rule.update_data(left)
-        self.right_rule.update_data(right)
+        self._insert_data(self.apply_rule(data))
 
+    def _insert_data(self, data):
+        left, right = data
+        self.left_rule._insert_data(left)
+        self.right_rule._insert_data(right)
 
 class HCHNMF_leaf(HCHNMF_Rule):
     def __init__(self, points):
@@ -106,6 +108,9 @@ class HCHNMF_leaf(HCHNMF_Rule):
         return data
 
     def update_data(self, data):
+        self.factorization.data = data
+
+    def _insert_data(self, data):
         self.factorization.data = data
 
 
@@ -146,7 +151,7 @@ class HCHNMF(object):
         else:
             self._leaf_minimum_int = leaf_minimum
         if isinstance(projection_method, str):
-            assert (projection_method in set(['fastmap', 'pca']))
+            assert (projection_method in {'fastmap', 'pca'})
             self._projection_method = self._choose_rule_fastmap if projection_method == 'fastmap' \
                 else self._choose_rule_pca
         else:
@@ -178,16 +183,16 @@ class HCHNMF(object):
         for i in range(1, n):  # We need preconditions to prevent breaks.
             u1 = np.mean(sorted_projections[:i])
             u2 = np.mean(sorted_projections[i:])
-            c[i - 1] = np.sum((sorted_projections - u1) ** float(2)) + np.sum((sorted_projections - u2) ** float(2))
-            # By only looking at the middle of this array, we ensure that we do not create
+            c[i - 1] = np.sum((sorted_projections[:i] - u1) ** float(2)) + np.sum((sorted_projections[i:] - u2) ** float(2))
+        # By only looking at the middle of this array, we ensure that we do not create
         # groups with less than self.leaf_minimum_int items
-        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)]) + self._leaf_minimum_int
+        rule_split = np.argmin(c[self._leaf_minimum_int:(-self._leaf_minimum_int)]) + self._leaf_minimum_int 
         # On the left we have all instances of data who's projection is less than or equal to the chosen split.
-        rule_value = sorted_projections[rule_split]
+        #rule_value = sorted_projections[rule_split]
+        rule_value = (sorted_projections[rule_split] + sorted_projections[rule_split + 1]) / float(2)
         left_tree = data[:, projection_distances <= rule_value]
         right_tree = data[:, projection_distances > rule_value]
-        rule_theta = (sorted_projections[rule_split] + sorted_projections[rule_split + 1]) / float(2)
-        return HCHNMF_vector_project_split(projection_vec, rule_theta), left_tree, right_tree
+        return HCHNMF_vector_project_split(projection_vec, rule_value), left_tree, right_tree
 
     def _choose_rule_fastmap(self, data, show_progress):
         """ Return a tuple-tree of rules that split our data """
@@ -202,7 +207,6 @@ class HCHNMF(object):
         x = data[:, np.argmax(t_dist)]
         x_dist = [np.linalg.norm(d) for d in data.T - x]
         y = data[:, np.argmax(x_dist)]
-        print x, y
 
         # unit vector xy
         projection_line = ((x - y) / (np.linalg.norm(x - y))).reshape((1, self._data_dimension))
@@ -289,20 +293,21 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import itertools
 
-    size = 50
+    size = 60
     w1 = np.random.multivariate_normal([0, 0], [[0.1, 0], [0, 0.1]], size).T
     w2 = np.random.multivariate_normal([4, 0], [[0.5, 0], [0, 0.5]], size).T
-    #w3 = np.random.multivariate_normal([4, 4], [[0.25, 0], [0, 0.25]], size).T
-    #w4 = np.random.multivariate_normal([0, 4], [[0.25, 0], [0, 0.25]], size).T
-    x = np.concatenate((w1, w2), axis=1)
+    w3 = np.random.multivariate_normal([4, 4], [[0.25, 0], [0, 0.25]], size).T
+    w4 = np.random.multivariate_normal([0, 4], [[0.25, 0], [0, 0.25]], size).T
+    x = np.concatenate((w1, w2, w3, w4), axis=1)
     d1 = np.random.multivariate_normal([0, 0], [[0.1, 0], [0, 0.1]], size).T
     c = HCHNMF(x, leaf_minimum=40, leaf_count_kind='a', projection_method='fastmap')
+    #c = HCHNMF(x, leaf_minimum=40, leaf_count_kind='a', projection_method='pca')
     c.factorize(niter=500, show_progress=True)
-    c._data = d1
+    c._data = x
     c.factorize(compute_h=False, show_progress=True)
     splits = c.rule_trees.apply_rule(x)
     groups = []
-    colors = ['r', 'g', 'b', 'black', 'orange', 'purple']
+    colors = ['red', 'green', 'blue', 'orange', 'purple']
 
     def prepsplits(splits):
         if type(splits) != tuple:
